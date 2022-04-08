@@ -1,0 +1,16 @@
+[package]
+name = "monadic-numerics"
+version = "0.0.1-dev"
+edition = "2021"
+
+[features]
+default = ["std"]
+std = []
+try_trait = []
+
+[dependencies]
+num-traits = "0.2.14"
+
+[dev-dependencies]
+anyhow = "1.0.56"
+static_assertions = "1.1.0"
