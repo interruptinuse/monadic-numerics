@@ -3,13 +3,15 @@
 
 
 mod checked;
+mod saturating;
 mod traits;
 
 
-pub use prelude::*;
+pub use checked::Checked;
+pub use saturating::Saturating;
 
 
 pub mod prelude {
 	pub use crate::checked::Checked;
-	pub use crate::traits::Integer;
+	pub use crate::saturating::Saturating;
 }

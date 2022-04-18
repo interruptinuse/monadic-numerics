@@ -4,24 +4,28 @@ use core::ops::DerefMut;
 use crate::traits::Integer;
 
 
+/// Provides safe, checked arithmetics on `T` with propagating error.  This type
+/// is implemented internally as `Option<T>`.
+///
+/// # Example
 /// ```
 /// # use monadic_numerics::prelude::*;
 /// # fn main() -> anyhow::Result<()> {
-/// let mut c: Checked::<u8> = Checked::new(5);
-/// assert_eq!(*c, Some(5));
-/// c = c / 0;
-/// assert_eq!(*c, None);
-/// c = 0.into();
-/// assert_eq!(*c, Some(0));
+/// let mut c: Checked::<u8> = Checked::MIN;
+/// assert_eq!(*c, Some(u8::MIN));
+/// assert_eq!(*(c / 0), None);
+/// assert_eq!(*(c - 1), None);
 /// c -= 1;
 /// assert_eq!(*c, None);
+///
+/// // The error propagates
 /// c += 20;
 /// assert_eq!(*c, None);
 /// # Ok(()) }
 /// ```
 #[derive(Clone, Copy, Debug)]
-pub struct Checked<T>(Option<T>)
-	where T: Integer;
+#[repr(transparent)]
+pub struct Checked<T>(Option<T>) where T: Integer;
 
 
 impl<T> Checked<T> where T: Integer {
@@ -29,8 +33,11 @@ impl<T> Checked<T> where T: Integer {
 	///
 	/// ```
 	/// # use monadic_numerics::prelude::*;
-	/// assert_eq!(Checked::<isize>::BITS, isize::BITS);
+	/// assert_eq!(Checked::<usize>::BITS, usize::BITS);
 	/// ```
+	/// ---
+	/// For the corresponding standard API, see e.g.
+	/// [`usize::BITS`][core::primitive::usize::BITS].
 	pub const BITS: u32 = <T as Integer>::BITS;
 
 
@@ -38,7 +45,7 @@ impl<T> Checked<T> where T: Integer {
 	///
 	/// ```
 	/// # use monadic_numerics::prelude::*;
-	/// assert_eq!(Checked::<isize>::BYTES, std::mem::size_of::<isize>());
+	/// assert_eq!(Checked::<usize>::BYTES, std::mem::size_of::<usize>());
 	/// ```
 	pub const BYTES: usize = <T as Integer>::BITS as usize / 8;
 
@@ -48,9 +55,12 @@ impl<T> Checked<T> where T: Integer {
 	///
 	/// ```
 	/// # use monadic_numerics::prelude::*;
-	/// assert_eq!(Checked::<i16>::MIN, -32768i16);
+	/// assert_eq!(*Checked::<i16>::MIN, Some(-32768i16));
 	/// ```
-	pub const MIN: T = <T as Integer>::MIN;
+	/// ---
+	/// For the corresponding standard API, see e.g.
+	/// [`i16::MIN`][core::primitive::i16::MIN].
+	pub const MIN: Self = Self(Some(<T as Integer>::MIN));
 
 
 	/// The largest value that can be represented by the underlying integer
@@ -58,9 +68,12 @@ impl<T> Checked<T> where T: Integer {
 	///
 	/// ```
 	/// # use monadic_numerics::prelude::*;
-	/// assert_eq!(Checked::<i16>::MAX, 32767i16);
+	/// assert_eq!(*Checked::<i16>::MAX, Some(32767i16));
 	/// ```
-	pub const MAX: T = <T as Integer>::MAX;
+	/// ---
+	/// For the corresponding standard API, see e.g.
+	/// [`i16::MAX`][core::primitive::i16::MAX].
+	pub const MAX: Self = Self(Some(<T as Integer>::MAX));
 
 
 	/// The value representing a propagating error, such as overflow, underflow,
@@ -83,9 +96,15 @@ impl<T> Checked<T> where T: Integer {
 
 	/// Creates a new non-error instance of `Self` from the underlying numeric
 	/// value.
+	///
+	/// # Example
+	/// ```
+	/// # use monadic_numerics::prelude::*;
+	/// assert_eq!(*Checked::<i16>::new(i16::MIN), Some(i16::MIN));
+	/// ```
 	#[inline]
-	pub fn new(inner: T) -> Self {
-		Self::from(inner)
+	pub const fn new(inner: T) -> Self {
+		Self(Some(inner))
 	}
 
 
@@ -95,8 +114,8 @@ impl<T> Checked<T> where T: Integer {
 	/// assert!((Checked::<u8>::new(1) / 0).is_error());
 	/// ```
 	#[inline]
-	pub fn is_error(&self) -> bool {
-		self.is_none()
+	pub const fn is_error(&self) -> bool {
+		self.inner_ref().is_none()
 	}
 
 
@@ -108,13 +127,16 @@ impl<T> Checked<T> where T: Integer {
 	/// assert_eq!(Checked::<u8>::ERROR.into_inner(), None);
 	/// ```
 	#[inline]
-	pub fn into_inner(self) -> Option<T> {
+	pub const fn into_inner(self) -> Option<T> {
 		self.0
 	}
 
 
 	/// Creates a new instance of `Checked<T>` from `U: TryInto<T>`, mapping
 	/// the error to `Checked::ERROR`.
+	///
+	/// This inherent method is needed because of Rust's blanket [`TryInto`]
+	/// impls, and will become obsolete in case specialization lands.
 	///
 	/// ```
 	/// # use monadic_numerics::prelude::*;
@@ -130,8 +152,15 @@ impl<T> Checked<T> where T: Integer {
 	}
 
 
+	/// Map `Checked<T>` to `Checked<U>` by transforming the inner [`Option`].
 	#[inline]
-	fn inner_ref(&self) -> &Option<T> {
+	pub fn visit<U: Integer, F: FnOnce(Option<T>) -> Option<U>>(self, visitor: F) -> Checked<U> {
+		Checked::<U>(visitor(self.0))
+	}
+
+
+	#[inline]
+	const fn inner_ref(&self) -> &Option<T> {
 		&self.0
 	}
 
@@ -140,92 +169,328 @@ impl<T> Checked<T> where T: Integer {
 	fn inner_mut(&mut self) -> &mut Option<T> {
 		&mut self.0
 	}
-
-
-	#[inline]
-	fn visit<U: Integer, F: FnOnce(Option<T>) -> Option<U>>(self, visitor: F) -> Checked<U> {
-		Checked::<U>(visitor(self.0))
-	}
 }
 
 
 /// [`Option`]-like `self` method impls.
 impl<T> Checked<T> where T: Integer {
+	/// Returns the contained numeric value, consuming `self`.
+	///
+	/// # Panics
+	/// - If `self.is_error()` with a panic message provided by `msg`.
+	///
+	/// # Example
+	/// This works:
+	/// ```
+	/// # use monadic_numerics::prelude::*;
+	/// assert_eq!(Checked::<u8>::new(0).expect("Checked::new is always valid"), 0);
+	/// ```
+	///
+	/// This panics:
+	/// ```should_panic
+	/// # use monadic_numerics::prelude::*;
+	/// (Checked::<u8>::new(1) / 0).expect("Division by zero results in error");
+	/// ```
+	/// ---
+	/// For the corresponding standard API, see
+	/// [`Option::expect`][core::option::Option::expect].
+	#[inline]
 	pub fn expect(self, msg: &str) -> T {
 		self.into_inner().expect(msg)
 	}
 
 
+	/// Returns the contained numeric value, consuming `self`.
+	///
+	/// # Panics
+	/// - If `self.is_error()`.
+	///
+	/// # Example
+	/// This works:
+	/// ```
+	/// # use monadic_numerics::prelude::*;
+	/// assert_eq!(Checked::<i8>::MAX.unwrap(), i8::MAX);
+	/// ```
+	/// Unwrapping a `Checked::ERROR` always panics:
+	/// ```should_panic
+	/// # use monadic_numerics::prelude::*;
+	/// let _ = Checked::<i32>::ERROR.unwrap();
+	/// ```
+	/// ---
+	/// For the corresponding standard API, see
+	/// [`Option::unwrap`][core::option::Option::unwrap].
+	#[inline]
 	pub fn unwrap(self) -> T {
 		self.into_inner().unwrap()
 	}
 
 
+	/// Returns the contained numeric value or, if `self.is_error()`, a provided
+	/// default.
+	///
+	/// ```
+	/// # use monadic_numerics::prelude::*;
+	/// let mut c = Checked::<usize>::new(5);
+	/// assert_eq!(c.unwrap_or(0), 5);
+	/// c /= 0;
+	/// assert_eq!(c.unwrap_or(0), 0);
+	/// ```
+	/// ---
+	/// For the corresponding standard API, see
+	/// [`Option::unwrap_or`][core::option::Option::unwrap_or].
+	#[inline]
 	pub fn unwrap_or(self, default: T) -> T {
 		self.into_inner().unwrap_or(default)
 	}
 
 
+	/// Returns the contained numeric value or, if `self.is_error()`, computes
+	/// it from a closure.
+	///
+	/// ```
+	/// # use monadic_numerics::prelude::*;
+	/// let k = 41;
+	/// let closure = || k + 1;
+	/// let c = Checked::<usize>::MAX;
+	/// assert_eq!(c.unwrap_or_else(closure), usize::MAX);
+	/// let c = c + 1;
+	/// assert_eq!(c.unwrap_or_else(closure), 42);
+	/// ```
+	/// ---
+	/// For the corresponding standard API, see
+	/// [`Option::unwrap_or_else`][core::option::Option::unwrap_or_else].
+	#[inline]
 	pub fn unwrap_or_else<F: FnOnce() -> T>(self, f: F) -> T {
 		self.into_inner().unwrap_or_else(f)
 	}
 
 
+	/// Returns the contained numeric value or, if `self.is_error()`,
+	/// `<T as Default>::default()`.
+	///
+	/// ```
+	/// # use monadic_numerics::prelude::*;
+	/// let c = Checked::<usize>::new(42);
+	/// assert_eq!(c.unwrap_or_default(), 42);
+	/// assert_eq!((c / 0).unwrap_or_default(), 0);
+	/// ```
+	/// ---
+	/// For the corresponding standard API, see
+	/// [`Option::unwrap_or_default`][core::option::Option::unwrap_or_default].
+	#[inline]
 	pub fn unwrap_or_default(self) -> T {
 		self.into_inner().unwrap_or_default()
 	}
 
 
+	/// Returns the contained numeric value without checking if
+	/// `self.is_error()`.
+	///
 	/// # Safety
 	/// Calling this method on a [`Checked::ERROR`] is undefined behavior.
+	///
+	/// ```
+	/// # use monadic_numerics::prelude::*;
+	/// let c: Checked<usize> = Some(42usize).into();
+	/// assert_eq!(unsafe { c.unwrap_unchecked() }, 42);
+	/// ```
+	///
+	/// ```no_run
+	/// # use monadic_numerics::prelude::*;
+	/// let c: Checked<usize> = Checked::ERROR;
+	/// assert_eq!(unsafe { c.unwrap_unchecked() }, 0); // Undefined behavior
+	/// ```
+	/// ---
+	/// For the corresponding standard API, see
+	/// [`Option::unwrap_unchecked`][core::option::Option::unwrap_unchecked].
+	#[inline]
 	pub unsafe fn unwrap_unchecked(self) -> T {
 		self.into_inner().unwrap_unchecked()
 	}
 
 
+	/// Maps a `Checked<T>` to `Checked<U>` by applying a function to the
+	/// contained integer, if any.  `U` must be a primitive integer type.
+	///
+	/// ```
+	/// # use monadic_numerics::prelude::*;
+	/// let c = Checked::<u8>::new(42);
+	/// assert_eq!(*c.map(|i| i.count_ones()), Some(3));
+	/// ```
+	///
+	/// ```compile_fail
+	/// # use monadic_numerics::prelude::*;
+	/// let c = Checked::<u8>::new(42);
+	/// // Checked<String> is not a valid type
+	/// assert_eq!(*c.map(|i| format!("{}", i)), Some("42"));
+	/// ```
+	/// ---
+	/// For the corresponding standard API, see
+	/// [`Option::map`][core::option::Option::map].
+	#[inline]
 	pub fn map<U: Integer, F: FnOnce(T) -> U>(self, f: F) -> Checked<U> {
 		self.visit(|o| o.map(f))
 	}
 
 
+	/// Calls the provided closure with a reference to the contained value (if
+	/// any).
+	///
+	/// ```
+	/// # use monadic_numerics::prelude::*;
+	/// let inspect = |c: Checked<u8>| {
+	///   let mut foo = "no value".to_string();
+	///   c.inspect(|c| { foo = format!("{}", c); });
+	///   foo
+	/// };
+	///
+	/// assert_eq!("no value", inspect(Checked::<u8>::ERROR));
+	/// assert_eq!("10", inspect(Checked::<u8>::new(10)));
+	/// ```
+	/// ---
+	/// For the corresponding standard API, see
+	/// [`Option::inspect`][core::option::Option::inspect].
+	#[inline]
 	pub fn inspect<F: FnOnce(&T)>(self, f: F) -> Self {
 		self.visit(|o| o.map(|i| { f(&i); i }) )
 	}
 
 
+	/// Returns the provided default (if error), or applies a function to
+	/// the contained value (if any).
+	///
+	/// ```
+	/// # use monadic_numerics::prelude::*;
+	/// assert_eq!(Checked::<usize>::new(0b11011).map_or(42, |i| i.count_ones()), 4);
+	/// assert_eq!((Checked::<usize>::new(0b11011) / 0).map_or(42, |i| i.count_ones()), 42);
+	/// ```
+	/// ---
+	/// For the corresponding standard API, see
+	/// [`Option::map_or`][core::option::Option::map_or].
+	#[inline]
 	pub fn map_or<U: Integer, F: FnOnce(T) -> U>(self, default: U, f: F) -> Checked<U> {
 		self.visit(|o| o.map_or(default, f).into())
 	}
 
 
+	/// Computes a default function (if error), or applies a different function
+	/// to the contained value (if any).
+	///
+	/// ```
+	/// # use monadic_numerics::prelude::*;
+	/// let half: u32 = 21;
+	/// assert_eq!(Checked::<usize>::new(0b11011).map_or_else(|| half * 2, |i| i.count_ones()), 4);
+	/// assert_eq!((Checked::<usize>::new(0b11011) / 0).map_or_else(|| half * 2, |i| i.count_ones()), 42);
+	/// ```
+	/// ---
+	/// For the corresponding standard API, see
+	/// [`Option::map_or_else`][core::option::Option::map_or_else].
+	#[inline]
 	pub fn map_or_else<U: Integer, D: FnOnce() -> U, F: FnOnce(T) -> U>(self, default: D, f: F) -> Checked<U> {
 		self.visit(|o| o.map_or_else(default, f).into())
 	}
 
 
+	/// Transforms the inner `Option<T>` into a [`Result<T, E>`], mapping
+	/// [`Some(v)`][core::option::Option::Some] to
+	/// [`Ok(v)`][core::result::Result::Ok] and [`None`] ([`Checked::ERROR`]) to
+	/// [`Err(err)`][core::result::Result::Err].
+	///
+	/// ```
+	/// # use monadic_numerics::prelude::*;
+	/// assert_eq!(Checked::<u8>::new(4).ok_or(()), Ok(4));
+	/// assert_eq!((Checked::<u8>::MAX + 1).ok_or(()), Err(()));
+	/// ```
+	/// ---
+	/// For the corresponding standard API, see
+	/// [`Option::ok_or`][core::option::Option::ok_or].
+	#[inline]
 	pub fn ok_or<E>(self, err: E) -> Result<T, E> {
 		self.into_inner().ok_or(err)
 	}
 
 
+	/// Transforms the inner `Option<T>` into a [`Result<T, E>`], mapping
+	/// [`Some(v)`][core::option::Option::Some] to
+	/// [`Ok(v)`][core::result::Result::Ok] and [`None`] ([`Checked::ERROR`]) to
+	/// [`Err(err)`][core::result::Result::Err].
+	///
+	/// ```
+	/// # use monadic_numerics::prelude::*;
+	/// assert_eq!(Checked::<u8>::new(4).ok_or_else(|| ()), Ok(4));
+	/// assert_eq!((Checked::<u8>::MAX + 1).ok_or_else(|| ()), Err(()));
+	/// ```
+	/// ---
+	/// For the corresponding standard API, see
+	/// [`Option::ok_or_else`][core::option::Option::ok_or_else].
+	#[inline]
 	pub fn ok_or_else<E, F: FnOnce() -> E>(self, err: F) -> Result<T, E> {
 		self.into_inner().ok_or_else(err)
 	}
 
 
+	/// Returns `Self::ERROR` if error, otherwise returns `optb`.
+	///
 	/// ```
 	/// # use monadic_numerics::prelude::*;
 	/// assert_eq!(*Checked::<u8>::ERROR.and(Checked::<u8>::from(2)), None);
 	/// assert_eq!(*Checked::<u8>::from(1).and(Checked::<u8>::from(2)), Some(2));
 	/// ```
+	/// ---
+	/// For the corresponding standard API, see
+	/// [`Option::and`][core::option::Option::and].
+	#[inline]
 	pub fn and<U: Integer>(self, optb: Checked<U>) -> Checked<U> {
 		optb.filter(|_| !self.is_none())
 	}
 
 
+	/// Returns `Self::ERROR` if error, otherwise calls `f` with `self` and
+	/// returns the result.
+	///
+	/// For a possibly more ergonomic alternative, see
+	/// [`Checked::and_then_checked`].
+	///
+	/// ```
+	/// # use monadic_numerics::prelude::*;
+	/// let mut counter: usize = 0;
+	/// let mut plus_one = |c: Checked<usize>| c.and_then(|i| { counter += 1; i.checked_add(1) });
+	/// let c = Checked::<usize>::MAX;
+	/// assert_eq!(*plus_one(c-1), Some(usize::MAX));
+	/// assert_eq!(*plus_one(c), None);
+	/// assert_eq!(*plus_one(Checked::ERROR), None); // Error, plus_one isn't run
+	/// assert_eq!(counter, 2);
+	/// ```
+	/// ---
+	/// For the corresponding standard API, see
+	/// [`Option::and_then`][core::option::Option::and_then].
 	#[inline]
 	pub fn and_then<U: Integer, F: FnOnce(T) -> Option<U>>(self, f: F) -> Checked<U> {
 		self.visit(|o| o.and_then(f))
+	}
+
+
+	/// Returns `Checked::<U>::ERROR` if error, otherwise calls `f` with `self`
+	/// and returns the result.
+	///
+	/// ```
+	/// # use monadic_numerics::prelude::*;
+	/// let mut counter: usize = 0;
+	/// let mut plus_one = |c: Checked<usize>| c.and_then_checked(|i| { counter += 1; i + 1 });
+	/// let c = Checked::<usize>::MAX;
+	/// assert_eq!(*plus_one(c - 1), Some(usize::MAX));
+	/// assert_eq!(*plus_one(c), None);
+	/// assert_eq!(*plus_one(c / 0), None); // Error, plus_one isn't run
+	/// assert_eq!(counter, 2);
+	/// ```
+	#[inline]
+	pub fn and_then_checked<U: Integer, F: FnOnce(Checked<T>) -> Checked<U>>(self, f: F) -> Checked<U> {
+		if !self.is_error() {
+			f(self)
+		}
+		else {
+			Checked::<U>::ERROR
+		}
 	}
 
 
@@ -240,16 +505,19 @@ impl<T> Checked<T> where T: Integer {
 	/// assert_eq!(*Checked::<u8>::from(1).or(Checked::<u8>::from(2)), Some(1));
 	/// assert_eq!(*Checked::<u8>::ERROR.or(Checked::<u8>::from(2)), Some(2));
 	/// ```
+	#[inline]
 	pub fn or(self, optb: Checked<T>) -> Checked<T> {
 		if self.is_some() { self } else { optb }
 	}
 
 
+	#[inline]
 	pub fn or_else<F: FnOnce() -> Checked<T>>(self, f: F) -> Self {
 		if self.is_some() { self } else { f() }
 	}
 
 
+	#[inline]
 	pub fn xor(self, other: Self) -> Self {
 		match (*self, *other) {
 			(Some(_), None) => self,
@@ -292,13 +560,20 @@ impl<T: Integer + num_traits::Signed> Checked<T> {
 	/// [`Checked::checked_abs()`].
 	///
 	/// # Panics
-	/// T::MIN.abs() will panic in debug mode.
+	/// - `Checked::<T>::MIN.abs()` will panic in debug mode.
+	#[inline]
 	pub fn abs(&self) -> Self {
 		self.map(|i| <T as num_traits::Signed>::abs(&i))
 	}
 
 
 	/// Computes the absolute value of `self`.
+	///
+	/// # Overflow behavior
+	/// The absolute value of `T::MIN` overflows `T`.  As opposed to
+	/// [`Checked::abs`], `Checked::<T>::new(T::MIN).checked_abs()` will
+	/// return `Checked::ERROR`.
+	#[inline]
 	pub fn checked_abs(&self) -> Self {
 		self.and_then(|i| if i == T::MIN { None } else { Some(<T as num_traits::Signed>::abs(&i)) })
 	}
@@ -609,29 +884,30 @@ fn checked_pow() {
 
 
 #[test]
-fn auto_traits() {
+fn assert_traits() {
+	use core::fmt::{Debug, Display};
+	use core::marker::Unpin;
 	use static_assertions::assert_impl_all;
 
-	assert_impl_all!(Checked<u8>: Send, Sync);
-	assert_impl_all!(Checked<u16>: Send, Sync);
-	assert_impl_all!(Checked<u32>: Send, Sync);
-	assert_impl_all!(Checked<u64>: Send, Sync);
-	assert_impl_all!(Checked<u128>: Send, Sync);
-	assert_impl_all!(Checked<usize>: Send, Sync);
+	assert_impl_all!(Checked<u8>: Debug, Display, Send, Sync, Unpin);
+	assert_impl_all!(Checked<u16>: Debug, Display, Send, Sync, Unpin);
+	assert_impl_all!(Checked<u32>: Debug, Display, Send, Sync, Unpin);
+	assert_impl_all!(Checked<u64>: Debug, Display, Send, Sync, Unpin);
+	assert_impl_all!(Checked<u128>: Debug, Display, Send, Sync, Unpin);
+	assert_impl_all!(Checked<usize>: Debug, Display, Send, Sync, Unpin);
 
-	assert_impl_all!(Checked<i8>: Send, Sync);
-	assert_impl_all!(Checked<i16>: Send, Sync);
-	assert_impl_all!(Checked<i32>: Send, Sync);
-	assert_impl_all!(Checked<i64>: Send, Sync);
-	assert_impl_all!(Checked<i128>: Send, Sync);
-	assert_impl_all!(Checked<isize>: Send, Sync);
-
+	assert_impl_all!(Checked<i8>: Debug, Display, Send, Sync, Unpin);
+	assert_impl_all!(Checked<i16>: Debug, Display, Send, Sync, Unpin);
+	assert_impl_all!(Checked<i32>: Debug, Display, Send, Sync, Unpin);
+	assert_impl_all!(Checked<i64>: Debug, Display, Send, Sync, Unpin);
+	assert_impl_all!(Checked<i128>: Debug, Display, Send, Sync, Unpin);
+	assert_impl_all!(Checked<isize>: Debug, Display, Send, Sync, Unpin);
 }
 
 
 #[test]
 #[cfg(feature = "std")]
-fn auto_panic_traits() {
+fn assert_std_traits() {
 	use std::panic::{UnwindSafe, RefUnwindSafe};
 	use static_assertions::assert_impl_all;
 
@@ -747,12 +1023,24 @@ impl<T: Integer, U: Integer + Into<T>> From<Option<Checked<U>>> for Checked<T> {
 impl<T: Integer + core::str::FromStr> core::str::FromStr for Checked<T> {
 	type Err = core::convert::Infallible;
 
+	/// Parses `Checked<T>` from `input`, returning `Checked::<T>::ERROR` if
+	/// failed to parse a value.
 	fn from_str(input: &str) -> Result<Self, Self::Err> {
 		let result = <T as core::str::FromStr>
 			::from_str(input)
 			.map(|i| Self::from(i))
 			.unwrap_or(Self::ERROR);
 		Ok(result)
+	}
+}
+
+
+impl<T: Integer> core::fmt::Display for Checked<T> {
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+		match self.deref() {
+			Some(i) => write!(f, "{}", i),
+			None => write!(f, "<Error>"),
+		}
 	}
 }
 

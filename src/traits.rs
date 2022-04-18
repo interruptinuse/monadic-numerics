@@ -1,5 +1,6 @@
 pub trait Integer:
 	Default
+	+ core::fmt::Display
 	+ num_traits::PrimInt
 	+ num_traits::CheckedNeg
 	+ num_traits::CheckedShl

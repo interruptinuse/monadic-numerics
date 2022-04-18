@@ -6,7 +6,7 @@ edition = "2021"
 [features]
 default = ["std"]
 std = []
-try_trait = []
+try_trait = [] # Enables core::ops::Try impls
 
 [dependencies]
 num-traits = "0.2.14"
